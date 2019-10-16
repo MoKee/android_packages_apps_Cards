@@ -17,8 +17,8 @@
 package org.mokee.cards;
 
 import android.app.ActivityOptions;
-import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.util.Pair;
 import android.view.LayoutInflater;
@@ -30,13 +30,20 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.StringRes;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 import androidx.cardview.widget.CardView;
+import androidx.preference.PreferenceManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.drakeet.multitype.ItemViewBinder;
+import com.drakeet.multitype.MultiTypeAdapter;
 import com.google.android.material.appbar.AppBarLayout;
 
+import org.jetbrains.annotations.NotNull;
+
+import java.util.ArrayList;
 import java.util.List;
 
 @SuppressWarnings("SwitchStatementWithTooFewBranches")
@@ -44,19 +51,24 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
 
+    private SharedPreferences mPref;
     private CardsDbHelper mDbHelper;
 
     private List<Card> mCards;
-    private CardsAdapter mAdapter;
+    private MultiTypeAdapter mAdapter;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        mPref = PreferenceManager.getDefaultSharedPreferences(this);
         mDbHelper = new CardsDbHelper(this);
 
-        mAdapter = new CardsAdapter(this);
+        mAdapter = new MultiTypeAdapter();
+        mAdapter.setHasStableIds(true);
+        mAdapter.register(SubHeaderItem.class, new SubHeaderItemViewBinder());
+        mAdapter.register(CardItem.class, new CardItemViewBinder());
 
         final AppBarLayout appBar = findViewById(R.id.appbar);
         final float overlapDistance = getResources().getDimension(R.dimen.appbar_overlap_distance);
@@ -81,6 +93,47 @@ public class MainActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         mCards = mDbHelper.query();
+        rebuildList();
+    }
+
+    private void rebuildList() {
+        final List<Object> list = new ArrayList<>();
+        final int selectedId = mPref.getInt("selected", -1);
+
+        Card selected = null;
+        final List<Card> cards = new ArrayList<>();
+
+        for (Card card : mCards) {
+            if (card.id == selectedId) {
+                selected = card;
+            } else {
+                cards.add(card);
+            }
+        }
+
+        if (selected != null) {
+            final SubHeaderItem subHeaderItem = new SubHeaderItem();
+            subHeaderItem.title = R.string.sub_active;
+            list.add(subHeaderItem);
+
+            final CardItem cardItem = new CardItem();
+            cardItem.card = selected;
+            list.add(cardItem);
+        }
+
+        if (!cards.isEmpty()) {
+            final SubHeaderItem subHeaderItem = new SubHeaderItem();
+            subHeaderItem.title = R.string.sub_available;
+            list.add(subHeaderItem);
+
+            for (Card card : cards) {
+                final CardItem cardItem = new CardItem();
+                cardItem.card = card;
+                list.add(cardItem);
+            }
+        }
+
+        mAdapter.setItems(list);
         mAdapter.notifyDataSetChanged();
     }
 
@@ -106,10 +159,15 @@ public class MainActivity extends AppCompatActivity {
         intent.setClassName("com.android.nfc", "org.mokee.nfc.MoKeeNfcSetIdReceiver");
         intent.putExtra("uid", card.uid);
         sendBroadcast(intent);
+
+        if (mPref.edit().putInt("selected", card.id).commit()) {
+            rebuildList();
+        }
+
         Toast.makeText(this, getString(R.string.card_active, card.name), Toast.LENGTH_SHORT).show();
     }
 
-    private void handleEdit(CardsAdapter.ViewHolder holder, Card card) {
+    private void handleEdit(CardItemViewBinder.ViewHolder holder, Card card) {
         final Intent intent = new Intent(this, EditActivity.class);
         intent.putExtra("card", card);
         startActivity(intent, ActivityOptions.makeSceneTransitionAnimation(this,
@@ -117,41 +175,70 @@ public class MainActivity extends AppCompatActivity {
                 Pair.create(holder.nameView, "name")).toBundle());
     }
 
-    private class CardsAdapter extends RecyclerView.Adapter<CardsAdapter.ViewHolder> {
+    private class SubHeaderItem {
+        @StringRes
+        private int title;
+    }
 
-        private final LayoutInflater mInflater;
+    private class CardItem {
+        private Card card;
+    }
 
-        CardsAdapter(Context context) {
-            mInflater = LayoutInflater.from(context);
-            setHasStableIds(true);
+    private class SubHeaderItemViewBinder extends ItemViewBinder<SubHeaderItem, SubHeaderItemViewBinder.ViewHolder> {
+
+        @NotNull
+        @Override
+        public ViewHolder onCreateViewHolder(@NotNull LayoutInflater inflater,
+                                             @NotNull ViewGroup parent) {
+            return new ViewHolder(inflater.inflate(R.layout.item_subheader, parent, false));
         }
 
-        @NonNull
         @Override
-        public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
-            return new ViewHolder(mInflater.inflate(R.layout.item_card, parent, false));
+        public void onBindViewHolder(@NotNull ViewHolder holder, SubHeaderItem item) {
+            holder.titleView.setText(item.title);
         }
 
         @Override
-        public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-            final Card card = mCards.get(position);
-            holder.cardView.setCardBackgroundColor(card.color);
-            holder.nameView.setText(card.name);
-            holder.cardView.setOnClickListener(v -> handleSelect(card));
+        public long getItemId(SubHeaderItem item) {
+            return 0x0100000000000000L | item.title;
+        }
+
+        class ViewHolder extends RecyclerView.ViewHolder {
+
+            TextView titleView;
+
+            private ViewHolder(@NonNull View itemView) {
+                super(itemView);
+                titleView = itemView.findViewById(R.id.title);
+            }
+
+        }
+
+    }
+
+    private class CardItemViewBinder extends ItemViewBinder<CardItem, CardItemViewBinder.ViewHolder> {
+
+        @NotNull
+        @Override
+        public ViewHolder onCreateViewHolder(@NotNull LayoutInflater inflater,
+                                             @NotNull ViewGroup parent) {
+            return new ViewHolder(inflater.inflate(R.layout.item_card, parent, false));
+        }
+
+        @Override
+        public void onBindViewHolder(@NotNull ViewHolder holder, CardItem item) {
+            holder.cardView.setCardBackgroundColor(item.card.color);
+            holder.nameView.setText(item.card.name);
+            holder.cardView.setOnClickListener(v -> handleSelect(item.card));
             holder.cardView.setOnLongClickListener(v -> {
-                handleEdit(holder, card);
+                handleEdit(holder, item.card);
                 return true;
             });
         }
 
         @Override
-        public long getItemId(int position) {
-            return mCards.get(position).id;
-        }
-
-        @Override
-        public int getItemCount() {
-            return mCards != null ? mCards.size() : 0;
+        public long getItemId(CardItem item) {
+            return 0x0200000000000000L | item.card.id;
         }
 
         class ViewHolder extends RecyclerView.ViewHolder {
